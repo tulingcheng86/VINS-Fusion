@@ -14,7 +14,8 @@ find_package(catkin REQUIRED COMPONENTS
     tf
     cv_bridge
     camera_models
-    image_transport)
+    image_transport
+    yolo_ros)
 
 find_package(OpenCV REQUIRED)
 
@@ -31,7 +32,19 @@ include_directories(
   ${EIGEN3_INCLUDE_DIR}
 )
 
-catkin_package()
+catkin_package(
+    INCLUDE_DIRS src
+    LIBRARIES vins_lib
+    CATKIN_DEPENDS roscpp
+    std_msgs
+    geometry_msgs
+    nav_msgs
+    tf
+    cv_bridge
+    camera_models
+    image_transport
+    yolo_ros
+)
 
 add_library(vins_lib
     src/estimator/parameters.cpp
