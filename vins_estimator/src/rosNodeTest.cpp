@@ -20,6 +20,7 @@
 #include "estimator/estimator.h"
 #include "estimator/parameters.h"
 #include "utility/visualization.h"
+#include <yolo_ros/DetectionMessages.h>
 
 Estimator estimator;
 
@@ -29,6 +30,50 @@ queue<sensor_msgs::ImageConstPtr> img0_buf;
 queue<sensor_msgs::ImageConstPtr> img1_buf;
 std::mutex m_buf;
 
+// 全局变量，用于存储最新的YOLO检测消息
+// yolo_ros::DetectionMessages::ConstPtr latest_detection_msgs;
+// std::mutex m_yolo;
+
+yolo_ros::DetectionMessages::ConstPtr latest_detection_msgs_left;
+yolo_ros::DetectionMessages::ConstPtr latest_detection_msgs_right;
+std::mutex m_yolo_left;
+std::mutex m_yolo_right;
+
+// void yolo_callback(const yolo_ros::DetectionMessages::ConstPtr& msg) {
+//     std::lock_guard<std::mutex> lock(m_yolo);
+//     latest_detection_msgs = msg;
+// }
+
+void yolo_callback_left(const yolo_ros::DetectionMessages::ConstPtr& msg) {
+    std::lock_guard<std::mutex> lock(m_yolo_left);
+    latest_detection_msgs_left = msg;
+}
+
+void yolo_callback_right(const yolo_ros::DetectionMessages::ConstPtr& msg) {
+    std::lock_guard<std::mutex> lock(m_yolo_right);
+    latest_detection_msgs_right = msg;
+}
+
+void drawDetections(cv::Mat& img, const yolo_ros::DetectionMessages::ConstPtr& detection_msgs) {
+    if (detection_msgs) {
+        for (const auto& dmsg : detection_msgs->data) {
+            cv::Point p1(dmsg.x1, dmsg.y1), p2(dmsg.x2, dmsg.y2);
+            cv::rectangle(img, p1, p2, cv::Scalar(255, 0, 0), 2);
+            cv::putText(img, dmsg.label, p1, cv::FONT_HERSHEY_COMPLEX, 1, cv::Scalar(0, 255, 255), 1);
+        }
+    }
+}
+    
+// void drawDetections(cv::Mat& img) {
+//     std::lock_guard<std::mutex> lock(m_yolo);
+//     if (latest_detection_msgs) {
+//         for (const auto& dmsg : latest_detection_msgs->data) {
+//             cv::Point p1(dmsg.x1, dmsg.y1), p2(dmsg.x2, dmsg.y2);
+//             cv::rectangle(img, p1, p2, cv::Scalar(255, 0, 0), 2); // 蓝色矩形框，cv::Scalar(255, 0, 0) 代表 BGR 中的蓝色
+//             cv::putText(img, dmsg.label, p1, cv::FONT_HERSHEY_COMPLEX, 1, cv::Scalar(0, 255, 255), 1); // 黄色文字，cv::Scalar(0, 255, 255) 代表 BGR 中的黄色
+//         }
+//     }
+// }
 
 void img0_callback(const sensor_msgs::ImageConstPtr &img_msg)
 {
@@ -105,8 +150,19 @@ void sync_process()
                 }
             }
             m_buf.unlock();
-            if(!image0.empty())
+            if(!image0.empty()){
+                // drawDetections(image0);  // 在图像上绘制检测结果
+                // drawDetections(image1);  // 在图像上绘制检测结果    
+                {
+                    std::lock_guard<std::mutex> lock(m_yolo_left);
+                    drawDetections(image0, latest_detection_msgs_left);
+                }
+                {
+                    std::lock_guard<std::mutex> lock(m_yolo_right);
+                    drawDetections(image1, latest_detection_msgs_right);
+                }            
                 estimator.inputImage(time, image0, image1);
+            }
         }
         else
         {
@@ -122,8 +178,18 @@ void sync_process()
                 img0_buf.pop();
             }
             m_buf.unlock();
-            if(!image.empty())
+            if(!image.empty()){
+                // drawDetections(image);  // 在图像上绘制检测结果
+                {
+                    std::lock_guard<std::mutex> lock(m_yolo_left);
+                    drawDetections(image, latest_detection_msgs_left);
+                }
+                {
+                    std::lock_guard<std::mutex> lock(m_yolo_right);
+                    drawDetections(image, latest_detection_msgs_right);
+                }
                 estimator.inputImage(time, image);
+            }
         }
 
         std::chrono::milliseconds dura(2);
@@ -264,6 +330,11 @@ int main(int argc, char **argv)
     ros::Subscriber sub_restart = n.subscribe("/vins_restart", 100, restart_callback);
     ros::Subscriber sub_imu_switch = n.subscribe("/vins_imu_switch", 100, imu_switch_callback);
     ros::Subscriber sub_cam_switch = n.subscribe("/vins_cam_switch", 100, cam_switch_callback);
+
+    // 订阅YOLO检测结果
+    // ros::Subscriber sub_yolo = n.subscribe("/untracked_info", 10, yolo_callback);
+    ros::Subscriber sub_yolo_left = n.subscribe("/untracked_info_left", 10, yolo_callback_left);
+    ros::Subscriber sub_yolo_right = n.subscribe("/untracked_info_right", 10, yolo_callback_right);
 
     std::thread sync_thread{sync_process};
     ros::spin();

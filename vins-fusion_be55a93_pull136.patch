@@ -1,0 +1,66 @@
+diff --git a/vins_estimator/CMakeLists.txt b/vins_estimator/CMakeLists.txt
+index 8735939..3f7c8d7 100644
+--- a/vins_estimator/CMakeLists.txt
++++ b/vins_estimator/CMakeLists.txt
+@@ -31,7 +31,18 @@ include_directories(
+   ${EIGEN3_INCLUDE_DIR}
+ )
+ 
+-catkin_package()
++catkin_package(
++    INCLUDE_DIRS src
++    LIBRARIES vins_lib
++    CATKIN_DEPENDS roscpp
++    std_msgs
++    geometry_msgs
++    nav_msgs
++    tf
++    cv_bridge
++    camera_models
++    image_transport
++)
+ 
+ add_library(vins_lib
+     src/estimator/parameters.cpp
+diff --git a/vins_estimator/package.xml b/vins_estimator/package.xml
+index 93df9c2..8247791 100644
+--- a/vins_estimator/package.xml
++++ b/vins_estimator/package.xml
+@@ -43,10 +43,20 @@
+   <build_depend>roscpp</build_depend>
+   <build_depend>image_transport</build_depend>
+   <build_depend>camera_models</build_depend>
++  <build_depend>std_msgs</build_depend>
++  <build_depend>geometry_msgs</build_depend>
++  <build_depend>nav_msgs</build_depend>
++  <build_depend>tf</build_depend>
++  <build_depend>cv_bridge</build_depend>
+ 
+   <run_depend>roscpp</run_depend>
+   <run_depend>image_transport</run_depend>
+   <run_depend>camera_models</run_depend>
++  <run_depend>std_msgs</run_depend>
++  <run_depend>geometry_msgs</run_depend>
++  <run_depend>nav_msgs</run_depend>
++  <run_depend>tf</run_depend>
++  <run_depend>cv_bridge</run_depend>
+ 
+ 
+   <!-- The export tag contains other, unspecified, tags -->
+diff --git a/vins_estimator/src/estimator/estimator.cpp b/vins_estimator/src/estimator/estimator.cpp
+index 05bf448..f4785c0 100644
+--- a/vins_estimator/src/estimator/estimator.cpp
++++ b/vins_estimator/src/estimator/estimator.cpp
+@@ -13,6 +13,12 @@
+ Estimator::Estimator(): f_manager{Rs}
+ {
+     ROS_INFO("init begins");
++    for(int i=0; i<WINDOW_SIZE+1; ++i)
++    {
++        pre_integrations[i] = nullptr;
++    }
++    tmp_pre_integration = nullptr;
++    last_marginalization_info = nullptr;
+     initThreadFlag = false;
+     clearState();
+ }
