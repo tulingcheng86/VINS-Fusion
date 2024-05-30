@@ -15,7 +15,8 @@ find_package(catkin REQUIRED COMPONENTS
     cv_bridge
     camera_models
     image_transport
-    yolo_ros)
+    yolo_ros
+    visualization_msgs)
 
 find_package(OpenCV REQUIRED)
 

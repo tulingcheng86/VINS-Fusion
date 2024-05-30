@@ -17,6 +17,7 @@
 #include <ros/ros.h>
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
+#include <visualization_msgs/MarkerArray.h>
 #include "estimator/estimator.h"
 #include "estimator/parameters.h"
 #include "utility/visualization.h"
@@ -39,6 +40,25 @@ yolo_ros::DetectionMessages::ConstPtr latest_detection_msgs_right;
 std::mutex m_yolo_left;
 std::mutex m_yolo_right;
 
+ros::Publisher marker_pub;
+
+// 结构体来存储三维点和标签
+struct ObjectDetection {
+    Eigen::Vector3d point; // 使用三维点
+    std::string label;
+};
+
+
+// 全局数据结构，用于存储物体信息
+std::map<std::string, std::vector<Eigen::Vector4d>> detected_objects;
+std::mutex detected_objects_mutex;
+
+// 添加物体到三维地图
+void add_to_3d_map(const Eigen::Vector4d& point, const std::string& label) {
+    detected_objects[label].push_back(point);
+}
+
+//single_camera
 // void yolo_callback(const yolo_ros::DetectionMessages::ConstPtr& msg) {
 //     std::lock_guard<std::mutex> lock(m_yolo);
 //     latest_detection_msgs = msg;
@@ -54,26 +74,70 @@ void yolo_callback_right(const yolo_ros::DetectionMessages::ConstPtr& msg) {
     latest_detection_msgs_right = msg;
 }
 
-void drawDetections(cv::Mat& img, const yolo_ros::DetectionMessages::ConstPtr& detection_msgs) {
+// 在drawDetections函数之前声明visualize_detections函数
+void visualize_detections(cv::Mat& image, const Eigen::Matrix4d& transform);
+
+void drawDetections(cv::Mat& img, const yolo_ros::DetectionMessages::ConstPtr& detection_msgs, const Eigen::Matrix4d& transform) {
     if (detection_msgs) {
         for (const auto& dmsg : detection_msgs->data) {
             cv::Point p1(dmsg.x1, dmsg.y1), p2(dmsg.x2, dmsg.y2);
             cv::rectangle(img, p1, p2, cv::Scalar(255, 0, 0), 2);
             cv::putText(img, dmsg.label, p1, cv::FONT_HERSHEY_COMPLEX, 1, cv::Scalar(0, 255, 255), 1);
+            
+            Eigen::Vector4d point_2d(dmsg.x1, dmsg.y1, 0, 1);  // 假设深度为0
+            Eigen::Vector4d point_3d = transform * point_2d;
+            add_to_3d_map(point_3d, dmsg.label);
         }
     }
-}
     
-// void drawDetections(cv::Mat& img) {
-//     std::lock_guard<std::mutex> lock(m_yolo);
-//     if (latest_detection_msgs) {
-//         for (const auto& dmsg : latest_detection_msgs->data) {
-//             cv::Point p1(dmsg.x1, dmsg.y1), p2(dmsg.x2, dmsg.y2);
-//             cv::rectangle(img, p1, p2, cv::Scalar(255, 0, 0), 2); // 蓝色矩形框，cv::Scalar(255, 0, 0) 代表 BGR 中的蓝色
-//             cv::putText(img, dmsg.label, p1, cv::FONT_HERSHEY_COMPLEX, 1, cv::Scalar(0, 255, 255), 1); // 黄色文字，cv::Scalar(0, 255, 255) 代表 BGR 中的黄色
-//         }
-//     }
-// }
+    visualize_detections(img, transform);
+}
+
+void visualize_detections(cv::Mat& image, const Eigen::Matrix4d& transform) {
+    std::lock_guard<std::mutex> lock(detected_objects_mutex);
+
+    visualization_msgs::MarkerArray marker_array;
+    int id = 0; // Marker ID
+
+    for (const auto& obj : detected_objects) {
+        for (const auto& point : obj.second) {
+            Eigen::Vector4d transformed_point = transform.inverse() * point;
+            visualization_msgs::Marker marker;
+
+            marker.header.frame_id = "world"; // Replace with your fixed frame
+            marker.header.stamp = ros::Time::now();
+            marker.ns = "detections";
+            marker.id = id++;
+            marker.type = visualization_msgs::Marker::SPHERE;
+            marker.action = visualization_msgs::Marker::ADD;
+
+            marker.pose.position.x = transformed_point.x();
+            marker.pose.position.y = transformed_point.y();
+            marker.pose.position.z = transformed_point.z();
+            marker.pose.orientation.x = 0.0;
+            marker.pose.orientation.y = 0.0;
+            marker.pose.orientation.z = 0.0;
+            marker.pose.orientation.w = 1.0;
+
+            marker.scale.x = 0.1;
+            marker.scale.y = 0.1;
+            marker.scale.z = 0.1;
+
+            marker.color.a = 1.0;
+            marker.color.r = 0.0;
+            marker.color.g = 1.0;
+            marker.color.b = 0.0;
+
+            marker_array.markers.push_back(marker);
+
+            cv::Point2d img_point(transformed_point.x() / transformed_point.z(), transformed_point.y() / transformed_point.z());
+            cv::putText(image, obj.first, img_point, cv::FONT_HERSHEY_COMPLEX, 1, cv::Scalar(0, 255, 255), 1);
+        }
+    }
+
+    marker_pub.publish(marker_array);
+}
+
 
 void img0_callback(const sensor_msgs::ImageConstPtr &img_msg)
 {
@@ -112,12 +176,12 @@ cv::Mat getImageFromMsg(const sensor_msgs::ImageConstPtr &img_msg)
     return img;
 }
 
-// extract images with same timestamp from two topics
+// 修改sync_process函数，传递变换矩阵到drawDetections
 void sync_process()
 {
-    while(1)
+    while (1)
     {
-        if(STEREO)
+        if (STEREO)
         {
             cv::Mat image0, image1;
             std_msgs::Header header;
@@ -127,13 +191,12 @@ void sync_process()
             {
                 double time0 = img0_buf.front()->header.stamp.toSec();
                 double time1 = img1_buf.front()->header.stamp.toSec();
-                // 0.003s sync tolerance
-                if(time0 < time1 - 0.003)
+                if (time0 < time1 - 0.003)
                 {
                     img0_buf.pop();
                     printf("throw img0\n");
                 }
-                else if(time0 > time1 + 0.003)
+                else if (time0 > time1 + 0.003)
                 {
                     img1_buf.pop();
                     printf("throw img1\n");
@@ -146,21 +209,22 @@ void sync_process()
                     img0_buf.pop();
                     image1 = getImageFromMsg(img1_buf.front());
                     img1_buf.pop();
-                    //printf("find img0 and img1\n");
                 }
             }
             m_buf.unlock();
-            if(!image0.empty()){
-                // drawDetections(image0);  // 在图像上绘制检测结果
-                // drawDetections(image1);  // 在图像上绘制检测结果    
+            if (!image0.empty()) {
+                Eigen::Matrix4d transform;
+                estimator.getPoseInWorldFrame(transform);
                 {
                     std::lock_guard<std::mutex> lock(m_yolo_left);
-                    drawDetections(image0, latest_detection_msgs_left);
+                    drawDetections(image0, latest_detection_msgs_left, transform);
                 }
                 {
                     std::lock_guard<std::mutex> lock(m_yolo_right);
-                    drawDetections(image1, latest_detection_msgs_right);
-                }            
+                    drawDetections(image1, latest_detection_msgs_right, transform);
+                }
+                visualize_detections(image0, transform);
+                visualize_detections(image1, transform);
                 estimator.inputImage(time, image0, image1);
             }
         }
@@ -170,7 +234,7 @@ void sync_process()
             std_msgs::Header header;
             double time = 0;
             m_buf.lock();
-            if(!img0_buf.empty())
+            if (!img0_buf.empty())
             {
                 time = img0_buf.front()->header.stamp.toSec();
                 header = img0_buf.front()->header;
@@ -178,16 +242,18 @@ void sync_process()
                 img0_buf.pop();
             }
             m_buf.unlock();
-            if(!image.empty()){
-                // drawDetections(image);  // 在图像上绘制检测结果
+            if (!image.empty()) {
+                Eigen::Matrix4d transform;
+                estimator.getPoseInWorldFrame(transform);
                 {
                     std::lock_guard<std::mutex> lock(m_yolo_left);
-                    drawDetections(image, latest_detection_msgs_left);
+                    drawDetections(image, latest_detection_msgs_left, transform);
                 }
                 {
                     std::lock_guard<std::mutex> lock(m_yolo_right);
-                    drawDetections(image, latest_detection_msgs_right);
+                    drawDetections(image, latest_detection_msgs_right, transform);
                 }
+                visualize_detections(image, transform);
                 estimator.inputImage(time, image);
             }
         }
@@ -331,8 +397,10 @@ int main(int argc, char **argv)
     ros::Subscriber sub_imu_switch = n.subscribe("/vins_imu_switch", 100, imu_switch_callback);
     ros::Subscriber sub_cam_switch = n.subscribe("/vins_cam_switch", 100, cam_switch_callback);
 
+    // Initialize the marker publisher
+    marker_pub = n.advertise<visualization_msgs::MarkerArray>("detection_markers", 1);
+
     // 订阅YOLO检测结果
-    // ros::Subscriber sub_yolo = n.subscribe("/untracked_info", 10, yolo_callback);
     ros::Subscriber sub_yolo_left = n.subscribe("/untracked_info_left", 10, yolo_callback_left);
     ros::Subscriber sub_yolo_right = n.subscribe("/untracked_info_right", 10, yolo_callback_right);
 

@@ -32,6 +32,14 @@ Estimator::~Estimator()
     }
 }
 
+Eigen::Matrix4d Estimator::getTransformation() const {
+    Eigen::Matrix4d transformation = Eigen::Matrix4d::Identity();
+    transformation.block<3, 3>(0, 0) = Rs[frame_count];
+    transformation.block<3, 1>(0, 3) = Ps[frame_count];
+    return transformation;
+}
+
+
 void Estimator::clearState()
 {
     mProcess.lock();
