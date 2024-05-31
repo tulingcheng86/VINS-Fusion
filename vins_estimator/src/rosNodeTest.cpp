@@ -75,7 +75,7 @@ void yolo_callback_right(const yolo_ros::DetectionMessages::ConstPtr& msg) {
 }
 
 // 在drawDetections函数之前声明visualize_detections函数
-void visualize_detections(cv::Mat& image, const Eigen::Matrix4d& transform);
+void visualize_detections(const Eigen::Matrix4d& transform);
 
 void drawDetections(cv::Mat& img, const yolo_ros::DetectionMessages::ConstPtr& detection_msgs, const Eigen::Matrix4d& transform) {
     if (detection_msgs) {
@@ -83,17 +83,18 @@ void drawDetections(cv::Mat& img, const yolo_ros::DetectionMessages::ConstPtr& d
             cv::Point p1(dmsg.x1, dmsg.y1), p2(dmsg.x2, dmsg.y2);
             cv::rectangle(img, p1, p2, cv::Scalar(255, 0, 0), 2);
             cv::putText(img, dmsg.label, p1, cv::FONT_HERSHEY_COMPLEX, 1, cv::Scalar(0, 255, 255), 1);
-            
+
             Eigen::Vector4d point_2d(dmsg.x1, dmsg.y1, 0, 1);  // 假设深度为0
             Eigen::Vector4d point_3d = transform * point_2d;
             add_to_3d_map(point_3d, dmsg.label);
         }
     }
-    
-    visualize_detections(img, transform);
+
+    visualize_detections(transform);  // 调用时只传递变换矩阵
 }
 
-void visualize_detections(cv::Mat& image, const Eigen::Matrix4d& transform) {
+
+void visualize_detections(const Eigen::Matrix4d& transform) {
     std::lock_guard<std::mutex> lock(detected_objects_mutex);
 
     visualization_msgs::MarkerArray marker_array;
@@ -108,7 +109,7 @@ void visualize_detections(cv::Mat& image, const Eigen::Matrix4d& transform) {
             marker.header.stamp = ros::Time::now();
             marker.ns = "detections";
             marker.id = id++;
-            marker.type = visualization_msgs::Marker::SPHERE;
+            marker.type = visualization_msgs::Marker::CUBE; // 使用CUBE类型
             marker.action = visualization_msgs::Marker::ADD;
 
             marker.pose.position.x = transformed_point.x();
@@ -119,19 +120,16 @@ void visualize_detections(cv::Mat& image, const Eigen::Matrix4d& transform) {
             marker.pose.orientation.z = 0.0;
             marker.pose.orientation.w = 1.0;
 
-            marker.scale.x = 0.1;
-            marker.scale.y = 0.1;
-            marker.scale.z = 0.1;
+            marker.scale.x = 0.2;
+            marker.scale.y = 0.2;
+            marker.scale.z = 0.2;
 
-            marker.color.a = 1.0;
+            marker.color.a = 0.6; // 半透明
             marker.color.r = 0.0;
             marker.color.g = 1.0;
             marker.color.b = 0.0;
 
             marker_array.markers.push_back(marker);
-
-            cv::Point2d img_point(transformed_point.x() / transformed_point.z(), transformed_point.y() / transformed_point.z());
-            cv::putText(image, obj.first, img_point, cv::FONT_HERSHEY_COMPLEX, 1, cv::Scalar(0, 255, 255), 1);
         }
     }
 
@@ -177,32 +175,23 @@ cv::Mat getImageFromMsg(const sensor_msgs::ImageConstPtr &img_msg)
 }
 
 // 修改sync_process函数，传递变换矩阵到drawDetections
-void sync_process()
-{
-    while (1)
-    {
-        if (STEREO)
-        {
+void sync_process() {
+    while (ros::ok()) {
+        if (STEREO) {
             cv::Mat image0, image1;
             std_msgs::Header header;
             double time = 0;
             m_buf.lock();
-            if (!img0_buf.empty() && !img1_buf.empty())
-            {
+            if (!img0_buf.empty() && !img1_buf.empty()) {
                 double time0 = img0_buf.front()->header.stamp.toSec();
                 double time1 = img1_buf.front()->header.stamp.toSec();
-                if (time0 < time1 - 0.003)
-                {
+                if (time0 < time1 - 0.003) {
                     img0_buf.pop();
                     printf("throw img0\n");
-                }
-                else if (time0 > time1 + 0.003)
-                {
+                } else if (time0 > time1 + 0.003) {
                     img1_buf.pop();
                     printf("throw img1\n");
-                }
-                else
-                {
+                } else {
                     time = img0_buf.front()->header.stamp.toSec();
                     header = img0_buf.front()->header;
                     image0 = getImageFromMsg(img0_buf.front());
@@ -223,19 +212,14 @@ void sync_process()
                     std::lock_guard<std::mutex> lock(m_yolo_right);
                     drawDetections(image1, latest_detection_msgs_right, transform);
                 }
-                visualize_detections(image0, transform);
-                visualize_detections(image1, transform);
                 estimator.inputImage(time, image0, image1);
             }
-        }
-        else
-        {
+        } else {
             cv::Mat image;
             std_msgs::Header header;
             double time = 0;
             m_buf.lock();
-            if (!img0_buf.empty())
-            {
+            if (!img0_buf.empty()) {
                 time = img0_buf.front()->header.stamp.toSec();
                 header = img0_buf.front()->header;
                 image = getImageFromMsg(img0_buf.front());
@@ -253,16 +237,14 @@ void sync_process()
                     std::lock_guard<std::mutex> lock(m_yolo_right);
                     drawDetections(image, latest_detection_msgs_right, transform);
                 }
-                visualize_detections(image, transform);
                 estimator.inputImage(time, image);
             }
         }
-
-        std::chrono::milliseconds dura(2);
+        // 调整同步间隔时间以减少系统负载
+        std::chrono::milliseconds dura(10); // 10 ms
         std::this_thread::sleep_for(dura);
     }
 }
-
 
 void imu_callback(const sensor_msgs::ImuConstPtr &imu_msg)
 {
@@ -278,7 +260,6 @@ void imu_callback(const sensor_msgs::ImuConstPtr &imu_msg)
     estimator.inputIMU(t, acc, gyr);
     return;
 }
-
 
 void feature_callback(const sensor_msgs::PointCloudConstPtr &feature_msg)
 {
@@ -409,3 +390,4 @@ int main(int argc, char **argv)
 
     return 0;
 }
+
